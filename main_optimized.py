@@ -27,9 +27,11 @@ is_calibrated = False
 # Variables para suavizado
 prediction_history = []
 HISTORY_SIZE = 10
-THRESHOLD = 0.5
+THRESHOLD = 0.57
 SHOW_ALL_LANDMARKS = False
 SHOW_GUIDE = True
+show_threshold_bar = True
+button_rect = (0, 0, 0, 0)  # (x, y, w, h) de botón toggle
 
 def extract_landmarks_optimized(landmarks, frame_width, frame_height):
     """Extrae landmarks con normalización mejorada"""
@@ -56,6 +58,14 @@ def calculate_relative_features(vector, baseline):
     diff = vector - baseline
     return diff
 
+def mouse_callback(event, x, y, flags, param):
+    """Toggle barra de umbral al hacer clic en el botón."""
+    global show_threshold_bar, button_rect
+    if event == cv2.EVENT_LBUTTONDOWN:
+        bx, by, bw, bh = button_rect
+        if bx <= x <= bx + bw and by <= y <= by + bh:
+            show_threshold_bar = not show_threshold_bar
+
 print("="*80)
 print("🎯 DETECTOR OPTIMIZADO - Expresiones Faciales Gramaticales")
 print("="*80)
@@ -75,20 +85,50 @@ print("   • Prueba combinar: cejas + boca + ojos")
 print("="*80)
 
 cap = cv2.VideoCapture(0)
+cv2.namedWindow("Detector Optimizado")
+cv2.setMouseCallback("Detector Optimizado", mouse_callback)
 
 # Ajustar resolución de webcam
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 768)   # +20% ancho
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 576)  # +20% alto
 
 calibration_counter = 0
+expression_count = 0
+previous_pred = 0
 
 while True:
     ret, frame = cap.read()
     if not ret:
         break
+    
+    # Invertir la cámara (vista espejo)
+    frame = cv2.flip(frame, 1)
 
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     h, w, _ = frame.shape
+    
+    # Definir posición del botón (esquina superior derecha)
+    btn_w, btn_h = 180, 40
+    btn_x, btn_y = w - btn_w - 20, 20
+    button_rect = (btn_x, btn_y, btn_w, btn_h)
+    
+    # Dibujar botón
+    cv2.rectangle(frame, (btn_x, btn_y), (btn_x + btn_w, btn_y + btn_h), (255, 255, 255), -1)
+    cv2.rectangle(frame, (btn_x, btn_y), (btn_x + btn_w, btn_y + btn_h), (0, 0, 0), 2)
+    btn_label = "Ocultar umbral" if show_threshold_bar else "Mostrar umbral"
+    (lbl_w, lbl_h), _ = cv2.getTextSize(btn_label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+    cv2.putText(frame, btn_label, (btn_x + (btn_w - lbl_w)//2, btn_y + btn_h//2 + lbl_h//2),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+
+    # Cruz central para marcar el centro de la pantalla
+    center_x, center_y = w // 2, h // 2
+    cv2.line(frame, (center_x, 0), (center_x, h), (255, 255, 255), 1)
+    cv2.line(frame, (0, center_y), (w, center_y), (255, 255, 255), 1)
+    # Óvalo guía del tamaño aproximado de un rostro
+    face_axis_x = int(w * 0.15)
+    face_axis_y = int(h * 0.22)
+    cv2.ellipse(frame, (center_x, center_y), (face_axis_x, face_axis_y), 0, 0, 360, (255, 255, 255), 2)
+
     results = face_mesh.process(frame_rgb)
 
     if results.multi_face_landmarks:
@@ -148,30 +188,43 @@ while True:
                 if len(prediction_history) > HISTORY_SIZE:
                     prediction_history.pop(0)
                 pred_smooth = 1 if np.mean(prediction_history) > 0.6 else 0
+                
+                # Contador de expresiones detectadas (transición 0 -> 1)
+                if pred_smooth == 1 and previous_pred == 0:
+                    expression_count += 1
+                previous_pred = pred_smooth
 
                 # Visualización
                 estado = "PRESENTE" if pred_smooth == 1 else "AUSENTE"
                 color = (0, 255, 0) if pred_smooth == 1 else (0, 0, 255)
-                
-                cv2.putText(frame, f"EXPRESION: {estado}", (20, 50),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
-                
+                expr_text = f"EXPRESION: {estado}"
+                expr_scale = 1.44  # 20% más grande que 1.2
+                if not show_threshold_bar:
+                    (expr_w, expr_h), _ = cv2.getTextSize(expr_text, cv2.FONT_HERSHEY_SIMPLEX, expr_scale, 3)
+                    expr_x = (w - expr_w) // 2
+                    expr_y = 60
+                    # Fondo negro para legibilidad
+                    padding = 10
+                    cv2.rectangle(frame, (expr_x - padding, expr_y - expr_h - padding),
+                                  (expr_x + expr_w + padding, expr_y + padding),
+                                  (0, 0, 0), -1)
+                    cv2.putText(frame, expr_text, (expr_x, expr_y),
+                                cv2.FONT_HERSHEY_SIMPLEX, expr_scale, color, 3)
                 if pred_smooth == 0:
                     cv2.putText(frame, "HAZ EXPRESION EXAGERADA!", (20, 90),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
                 
-                # Info detallada
-                cv2.putText(frame, f"Prob: {prob_si_adjusted:.3f} | Cambio: {change_magnitude:.3f}", 
-                           (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                cv2.putText(frame, f"Umbral: {THRESHOLD:.2f}", (20, 160),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
                 
-                # Barra de probabilidad
-                bar_width = int(prob_si_adjusted * 500)
-                cv2.rectangle(frame, (20, 180), (20 + bar_width, 210), color, -1)
-                cv2.rectangle(frame, (20, 180), (520, 210), (255, 255, 255), 2)
-                threshold_x = int(20 + THRESHOLD * 500)
-                cv2.line(frame, (threshold_x, 175), (threshold_x, 215), (0, 0, 255), 3)
+                if show_threshold_bar:
+                    cv2.putText(frame, f"Umbral: {THRESHOLD:.2f}", (20, 160),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                    
+                    # Barra de probabilidad
+                    bar_width = int(prob_si_adjusted * 500)
+                    cv2.rectangle(frame, (20, 180), (20 + bar_width, 210), color, -1)
+                    cv2.rectangle(frame, (20, 180), (520, 210), (255, 255, 255), 2)
+                    threshold_x = int(20 + THRESHOLD * 500)
+                    cv2.line(frame, (threshold_x, 175), (threshold_x, 215), (0, 0, 255), 3)
                 
                 # Guía
                 if SHOW_GUIDE:
